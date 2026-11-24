@@ -11,7 +11,7 @@ data/
 dist/
 
 # Raw Phase 1 captures: full traffic incl. session cookies and tokens
-phase1/results/
+research/results/
 
 # Local docker overrides (ports)
 docker/.env

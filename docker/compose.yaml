@@ -1,0 +1,27 @@
+# gptapi: OpenAI-compatible API on http://127.0.0.1:8000/v1, browser view on http://127.0.0.1:6080
+# Start with ./install.sh (or: docker compose -f docker/compose.yaml up -d --build).
+name: gptapi
+services:
+  gptapi:
+    image: gptapi:latest
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: ${GPTAPI_CONTAINER:-gptapi}
+    ports:
+      - "127.0.0.1:${GPTAPI_API_PORT:-8000}:8000"     # OpenAI-compatible API
+      - "127.0.0.1:${GPTAPI_NOVNC_PORT:-6080}:6080"   # noVNC: watch the browser, clear human checks
+    environment:
+      GPTAPI_NOVNC_URL: http://localhost:${GPTAPI_NOVNC_PORT:-6080}
+    volumes:
+      - data:/data      # Chromium profile, conversation state, transcripts
+    shm_size: 1g
+    # Docker's default seccomp profile blocks the user namespaces Chromium's sandbox needs.
+    # Unconfined keeps the Chromium sandbox ON; without it Chromium starts with --no-sandbox.
+    security_opt:
+      - seccomp=unconfined
+    stop_grace_period: 30s
+    restart: unless-stopped
+volumes:
+  data:
+    name: ${GPTAPI_VOLUME:-gptapi-data}

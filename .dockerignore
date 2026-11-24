@@ -1,0 +1,6 @@
+.venv
+data
+phase1
+tests
+**/__pycache__
+dist

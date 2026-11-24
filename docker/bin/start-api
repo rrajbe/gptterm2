@@ -1,0 +1,12 @@
+#!/bin/sh
+# Placeholder hook for the API server: runs `python -m gptapi` from /app on port 8000 once
+# /app/gptapi exists (COPY it into the image or bind-mount it). Until then it logs and exits 0,
+# and supervisord does not restart it. The server should listen on $GPTAPI_HOST:$GPTAPI_PORT and
+# reach Chromium over CDP at http://127.0.0.1:$CDP_PORT.
+if [ -d /app/gptapi ]; then
+  cd /app
+  export GPTAPI_HOST="${GPTAPI_HOST:-0.0.0.0}" GPTAPI_PORT="${API_PORT:-8000}"
+  exec python -m gptapi
+fi
+echo "$(date -u +%FT%TZ) /app/gptapi not present; API server disabled"
+exit 0

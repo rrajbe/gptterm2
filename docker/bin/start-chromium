@@ -1,0 +1,32 @@
+#!/bin/sh
+# Headed Chromium on the Xvfb display; supervisord restarts it if it dies.
+set -e
+PROFILE="${CHROME_PROFILE:-/data/chrome-profile}"
+mkdir -p "$PROFILE"
+# A crash (or a new container hostname) leaves a stale profile lock that blocks the next start.
+rm -f "$PROFILE/SingletonLock" "$PROFILE/SingletonSocket" "$PROFILE/SingletonCookie"
+for i in $(seq 1 100); do
+  [ -e "/tmp/.X11-unix/X${DISPLAY#:}" ] && break
+  sleep 0.1
+done
+# Chromium's namespace sandbox needs unprivileged user namespaces, which Docker's default seccomp
+# profile blocks (compose.yaml sets seccomp=unconfined to allow them). Without them, fall back to
+# --no-sandbox so the browser still starts, and say so in the log.
+SANDBOX=""
+if ! unshare -Ur true 2>/dev/null; then
+  echo "WARNING: user namespaces unavailable; starting Chromium with --no-sandbox" >&2
+  SANDBOX="--no-sandbox"
+fi
+exec /usr/bin/chromium $SANDBOX \
+  --user-data-dir="$PROFILE" \
+  --remote-debugging-port="${CDP_PORT:-9222}" \
+  --remote-debugging-address=127.0.0.1 \
+  --no-first-run --no-default-browser-check \
+  --disable-background-timer-throttling \
+  --disable-renderer-backgrounding \
+  --disable-backgrounding-occluded-windows \
+  --disable-quic \
+  --password-store=basic \
+  --window-position=0,0 --window-size=1280,900 \
+  ${CHROMIUM_EXTRA_FLAGS} \
+  about:blank

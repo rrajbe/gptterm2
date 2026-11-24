@@ -1,0 +1,17 @@
+# Local environments and caches
+.venv/
+__pycache__/
+.pytest_cache/
+.DS_Store
+
+# Runtime data (Chromium profile, state, transcripts, logs)
+data/
+
+# Release archives (gptapi-<version>.tar.gz, packed from this tree)
+dist/
+
+# Raw Phase 1 captures: full traffic incl. session cookies and tokens
+phase1/results/
+
+# Local docker overrides (ports)
+docker/.env

@@ -8,7 +8,7 @@ from opencode, or from any client that speaks the OpenAI chat API.
 
 | Need | Notes |
 |---|---|
-| macOS (Apple Silicon or Intel) or Linux | Tested on an Apple Silicon Mac. |
+| macOS (Apple Silicon or Intel) or Linux | Tested on an Apple Silicon Mac. The Intel (amd64) image builds and Chromium starts in it; a full chat on an Intel machine has not been tried yet. |
 | **Docker Desktop**, running | https://www.docker.com/products/docker-desktop/ (Linux: Docker Engine with the compose plugin). The container needs about 1.5 GB of RAM, and Docker Desktop's default memory setting is enough. |
 | About 3 GB of free disk | The image is about 1.2 GB. Browser data and transcripts grow slowly. |
 | Internet access to chatgpt.com | No account is needed. |

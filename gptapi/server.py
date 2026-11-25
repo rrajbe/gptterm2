@@ -8,7 +8,9 @@ import uuid
 from aiohttp import web
 
 from . import __version__
+from .agent import Agent, build_first
 from .browser import Browser, BrowserLost, GptapiError, HumanCheckRequired
+from .history import content_text
 from .mapping import MODEL_BASE, BadRequest, after_turn_hashes, resolve
 from .store import Store
 from .stream import StableEmitter
@@ -84,6 +86,35 @@ class App:
                                   "conversations": len(self.store.get("conversations") or {})},
                                  status=200 if ok else 503)
 
+    def shape(self, plan, agent):
+        """Final prompt: agent framing, and rollover when the chatgpt.com conversation is full.
+        chatgpt.com keeps ~24-28k tokens and silently drops the oldest messages (research/LIMITS.md),
+        so past `rollover_chars` a fresh conversation starts, seeded with the task and recent turns."""
+        budget = self.cfg.rollover_chars
+        if plan.conv_id and budget:
+            c = self.store.conv(plan.conv_id) or {}
+            size = c.get("chars", 0)
+            # a conversation with a single turn (just started or just rolled over) is never rolled
+            # again, or a large current message would roll over on every turn
+            if size + len(plan.prompt) > budget and c.get("turns", 0) >= 2:
+                plan.rolled_from, plan.conv_id, plan.inject, plan.mode = plan.conv_id, None, None, "rollover"
+                half = budget // 2
+                if agent:
+                    plan.prompt = agent.first_prompt(plan.prefix, plan.last, budget=half)
+                else:
+                    systems = "\n\n".join(content_text(m.get("content")).strip() for m in plan.prefix
+                                           if m.get("role") in ("system", "developer"))
+                    turns = [m for m in plan.prefix if m.get("role") not in ("system", "developer")]
+                    plan.prompt = build_first(systems or "Continue this conversation.", turns,
+                                              content_text(plan.last.get("content")).strip(), None, half)
+                return
+        if not agent:
+            return
+        if plan.conv_id is None:
+            plan.prompt = agent.first_prompt(plan.prefix, plan.last)
+        else:
+            plan.prompt = agent.later_prompt(plan.prompt)
+
     async def chat(self, request):
         try:
             body = await request.json()
@@ -91,17 +122,22 @@ class App:
             return err(400, "invalid_request_error", "body must be JSON")
         if not isinstance(body, dict) or not isinstance(body.get("messages"), list):
             return err(400, "invalid_request_error", "'messages' must be a list")
-        if (body.get("tools") or body.get("tool_choice") or body.get("functions")) and not self.tools_logged:
-            log.info("request carries tools/tool_choice; ignored (tool calling not supported yet)")
+        agent = Agent.for_request(body, self.cfg)
+        if agent and not self.tools_logged:
+            log.info("agent mode: %d tools offered to chatgpt.com (%s)%s", len(agent.tools), ", ".join(agent.tools),
+                     f"; left out: {', '.join(agent.dropped)}" if agent.dropped else "")
             self.tools_logged = True
         model = body.get("model") or MODEL_BASE
         stream = bool(body.get("stream"))
         include_usage = bool((body.get("stream_options") or {}).get("include_usage"))
         try:
-            plan = resolve(self.store, body["messages"], model, request.headers.get("X-Conversation-Id"))
+            msgs = agent.transform(body["messages"]) if agent else body["messages"]
+            plan = resolve(self.store, msgs, model, request.headers.get("X-Conversation-Id"))
         except BadRequest as e:
             return err(400, "invalid_request_error", str(e))
-        log.info("chat: mode=%s conv=%s stream=%s prompt=%d chars", plan.mode, plan.conv_id, stream, len(plan.prompt))
+        self.shape(plan, agent)
+        log.info("chat: mode=%s conv=%s stream=%s prompt=%d chars%s", plan.mode, plan.conv_id, stream,
+                 len(plan.prompt), f" (rolled over from {plan.rolled_from})" if plan.rolled_from else "")
 
         loop = asyncio.get_running_loop()
         q = asyncio.Queue()
@@ -117,7 +153,19 @@ class App:
                 q.put_nowait(("error", e))
                 return None
             cid = res["conversation_id"]
-            self.store.add_point(cid, after_turn_hashes(plan.prefix, plan.last, [res["answer"]]), res["conv_state"])
+            if agent:
+                text, calls, problems = agent.parse(res["answer"])
+                if problems:
+                    log.warning("tool_call blocks not accepted: %s", "; ".join(problems))
+                res["text"], res["calls"] = text, calls
+                canonical = agent.render_assistant(text, calls)
+            else:
+                canonical = res["answer"]
+            self.store.add_point(cid, after_turn_hashes(plan.prefix, plan.last, [canonical]), res["conv_state"])
+            before = (self.store.conv(plan.conv_id) or {}).get("chars", 0) if plan.conv_id else 0
+            self.store.update_conv(cid, chars=before + len(plan.prompt) + len(res["answer"] or ""))
+            if plan.rolled_from and plan.rolled_from != cid:
+                self.store.update_conv(plan.rolled_from, rolled_to=cid)
             if plan.name:
                 self.store.bind_name(plan.name, cid)
             q.put_nowait(("done", res))
@@ -139,10 +187,16 @@ class App:
             res = val
             cid = res["conversation_id"]
             pt, ct = est_tokens(plan.prompt), est_tokens(res["answer"])
+            message = {"role": "assistant", "content": res["answer"]}
+            finish = "stop" if not res["incomplete_reason"] else "length"
+            if agent:
+                message["content"] = res["text"] or (None if res["calls"] else "")
+                if res["calls"]:
+                    message["tool_calls"] = Agent.to_openai(res["calls"])
+                    finish = "tool_calls"
             return web.json_response({
                 "id": f"chatcmpl-{turn_id}-{cid}", "object": "chat.completion", "created": created, "model": model,
-                "choices": [{"index": 0, "message": {"role": "assistant", "content": res["answer"]},
-                             "finish_reason": "stop" if not res["incomplete_reason"] else "length"}],
+                "choices": [{"index": 0, "message": message, "finish_reason": finish}],
                 "usage": {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct},
             }, headers={"X-Conversation-Id": cid, "X-Gptapi-Mapping": plan.mode})
 
@@ -175,6 +229,15 @@ class App:
             await resp.write(b"data: " + json.dumps(obj, ensure_ascii=False).encode() + b"\n\n")
 
         emitter = StableEmitter()
+
+        def visible(text):
+            # agent mode: never stream a tool_call block as text; it is sent as tool_calls at the end
+            if agent:
+                cut = [i for i in (text.find("```tool_call"), text.find("<tool_call>")) if i >= 0]
+                if cut:
+                    return text[:min(cut)]
+            return text
+
         await send({"role": "assistant", "content": ""})
         res = None
         try:
@@ -188,7 +251,7 @@ class App:
                         await resp.write(b": keepalive\n\n")
                         continue
                 if kind == "text":
-                    d = emitter.feed(val)
+                    d = emitter.feed(visible(val))
                     if d:
                         await send({"content": d})
                 elif kind == "error":
@@ -200,10 +263,15 @@ class App:
                     break
                 elif kind == "done":
                     res = val
-                    d = emitter.finish(res["answer"])
+                    d = emitter.finish(res["text"] if agent else res["answer"])
                     if d:
                         await send({"content": d})
-                    await send({}, finish="stop" if not res["incomplete_reason"] else "length")
+                    finish = "stop" if not res["incomplete_reason"] else "length"
+                    if agent and res["calls"]:
+                        calls = Agent.to_openai(res["calls"])
+                        await send({"tool_calls": [dict(c, index=i) for i, c in enumerate(calls)]})
+                        finish = "tool_calls"
+                    await send({}, finish=finish)
                     if include_usage:
                         pt, ct = est_tokens(plan.prompt), est_tokens(emitter.sent)
                         await send(usage={"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct})
@@ -214,7 +282,7 @@ class App:
             log.info("client went away mid-stream; turn continues in the background")
             raise
         finally:
-            if res and emitter.sent and emitter.sent != res["answer"]:
+            if res and not agent and emitter.sent and emitter.sent != res["answer"]:
                 # the client kept what we streamed; remember that variant of the history too
                 self.store.add_point(res["conversation_id"],
                                      after_turn_hashes(plan.prefix, plan.last, [emitter.sent]),

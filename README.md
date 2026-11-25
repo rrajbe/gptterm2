@@ -1,6 +1,6 @@
 # gptapi
 
-An OpenAI-compatible HTTP API (chat only, no tool calling yet) backed by **logged-out
+An OpenAI-compatible HTTP API (chat, with emulated tool calling) backed by **logged-out
 chatgpt.com running in a real Chromium**, driven over the Chrome DevTools Protocol.
 
 The page does its own Turnstile / proof-of-work / sentinel work. gptapi only types the prompt
@@ -76,6 +76,10 @@ fake browser; no network).
 | `GPTAPI_NOVNC_URL` | `http://localhost:6080` | URL shown in human-check errors |
 | `GPTAPI_RAW` | off | `1` = also append the raw ndjson stream to `data/raw/YYYYMMDD.ndjson` |
 | `GPTAPI_LOG_LEVEL` | `INFO` | log level (log also goes to `data/gptapi.log`) |
+| `GPTAPI_AGENT_MODE` | `1` | `0` = ignore `tools` (plain chat, client system prompt passed through) |
+| `GPTAPI_TOOLS` | `edit,write,patch,apply_patch,glob,grep,read,list,shell` | tools offered to chatgpt.com (others are left out); `*` = all the client sends |
+| `GPTAPI_TOOL_RESULT_CHARS` | `8000` | longer tool results are cut to the first 75% and last 25% with a "use read with offset/limit or grep" note |
+| `GPTAPI_ROLLOVER_CHARS` | `70000` | past this many characters in one chatgpt.com conversation, the next turn starts a fresh one |
 
 ## Endpoints
 
@@ -84,8 +88,8 @@ fake browser; no network).
   `chat.completion`. `stream: true` returns SSE `chat.completion.chunk`s ending with
   `data: [DONE]`, and honours `stream_options.include_usage`. Usage numbers are estimates
   (characters / 4). Any `model` value is accepted. Only `chatgpt-web/<name>` has a special
-  meaning. `tools`, `tool_choice`, `temperature` and similar fields are ignored; `tools` is
-  logged once.
+  meaning. `tools` switch on agent mode (see "Tool calling"); `tool_choice`, `temperature`
+  and similar fields are ignored.
 - `GET /health`: browser connection, open tabs (URL, busy, human check) and human-check
   state. Returns 200 when usable and 503 otherwise. It needs no API key.
 
@@ -108,6 +112,7 @@ and keeps `\*`, `\_`, `` \` ``, `\#`, a leading `1\.`, and the like.
 | Situation | HTTP | `error.type` |
 |---|---|---|
 | logged-out message cap, sign-in wall, message not accepted, upstream non-200 | 429 | `rate_limit_exceeded` (message = page text) |
+| chatgpt.com refused the message as too long (HTTP 400; ~120k characters is accepted, 180k is not) | 400 | `context_length_exceeded` |
 | visible human check (Turnstile challenge, "verify you are human", CF interstitial) for more than 20 s | 503 | `human_check_required`: "open noVNC at http://localhost:6080 and complete the check" |
 | browser unreachable or connection lost (reconnects on the next request) | 503 | `browser_unavailable` |
 | bad request body | 400 | `invalid_request_error` |
@@ -169,10 +174,45 @@ opencode resends the full history on every turn, so automatic mapping keeps one 
 conversation per opencode session. Side requests with a different system prompt, such as
 title generation, each start a separate new chatgpt.com conversation and count against the
 logged-out message cap. That's why the config turns titles off. To pin a session to a named
-conversation, add a model `chatgpt-web/<name>`. Tool calling is not supported yet: opencode's
-`tools` are ignored, so the model answers in text only.
+conversation, add a model `chatgpt-web/<name>`. opencode's tools work through gptapi's emulated
+tool calling (below). Because the model is called `chatgpt-web`, opencode offers its `patch`
+tool for edits instead of `edit`/`write`; gptapi sends `patch`'s full format description.
+
+## Tool calling (agent mode)
+
+chatgpt.com has no client tool calling, so when a request carries OpenAI `tools`, gptapi
+emulates it. The design and the measurements behind it are in `research/TOOL-CALLING.md`,
+`research/LIMITS.md` and `research/OPENCODE-FLOW.md`.
+
+- **Lean first message.** The client's system prompt is replaced by a short coding-agent prompt
+  plus the client's `<env>` block. Only the allowed tools (`GPTAPI_TOOLS`) are listed, one line
+  each. The tool protocol comes last. opencode's first message drops from ~15.5k characters to
+  ~2.5–3.9k.
+- **Protocol.** The model replies with fenced ```` ```tool_call ```` blocks holding
+  `{"name", "arguments"}` JSON. gptapi checks each call against the tool's schema (unknown
+  tools and missing required arguments stay as visible text; unknown argument names are
+  dropped) and returns `tool_calls` with `finish_reason: "tool_calls"`. When streaming, text
+  before the first block streams as usual and the calls arrive in one chunk at the end.
+- **Later turns.** Tool results are typed as `[tool result <name>]` text, several results of one
+  step in one message, plus a one-line reminder of the protocol. Each agent step is one
+  chatgpt.com message.
+- **Large results** are cut to `GPTAPI_TOOL_RESULT_CHARS` with a note telling the model to page
+  with `read` offset/limit or `grep`.
+- **Rollover.** chatgpt.com keeps about 24–28k tokens (~100k characters of real content) and
+  silently drops the oldest messages: the instructions and the task. Past
+  `GPTAPI_ROLLOVER_CHARS`, gptapi starts a fresh conversation in the same request, seeded with the
+  instructions, the original task, the most recent turns that fit in half the budget, and the
+  protocol (`X-Gptapi-Mapping: rollover`). A conversation that rolled over forwards to its
+  successor, also for pinned ids and names. A conversation with only one turn is never rolled
+  over again. Rollover also applies to plain chat.
+
+Piloted 2026-11-25 with opencode 2.4.0. "What does calc.py do?" took 2 chatgpt.com messages
+(read, then answer). "Add sub(), add a test, run the tests" took 3 (one patch to two files, one
+shell call, then the summary); the edits were correct.
 
 ## Limits
+
+- Agent steps cost logged-out messages: each tool round trip is one chatgpt.com message.
 
 - One tab sends at a time. chatgpt.com only sends from the visible tab, so gptapi brings a tab
   to the front, types and sends under a lock that is released as soon as the request has left

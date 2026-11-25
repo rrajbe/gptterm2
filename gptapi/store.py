@@ -77,6 +77,18 @@ class Store:
             c["updated"] = time.time()
             self.save()
 
+    def follow(self, cid):
+        """A conversation that rolled over points at its successor; follow the chain."""
+        with self.lock:
+            seen = set()
+            while cid and cid not in seen:
+                seen.add(cid)
+                nxt = (self.st["conversations"].get(cid) or {}).get("rolled_to")
+                if not nxt:
+                    break
+                cid = nxt
+            return cid
+
     def name_to_conv(self, name):
         with self.lock:
             return self.st["names"].get(name)

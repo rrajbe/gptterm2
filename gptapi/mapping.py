@@ -27,9 +27,10 @@ class Plan:
     inject: object = None         # conversationState to graft (branch from an older point)
     prompt: str = ""
     name: object = None           # pinned name to bind after the turn
-    mode: str = "new"             # new | named | pinned | matched | matched-nosystem | branch
+    mode: str = "new"             # new | named | pinned | matched | matched-nosystem | branch | rollover
     prefix: list = field(default_factory=list)
     last: dict = field(default_factory=dict)
+    rolled_from: object = None    # conversation that was too full and was replaced (rollover)
 
 
 def model_name(model):
@@ -46,6 +47,8 @@ def resolve(store, messages, model=None, header_conv=None):
         raise BadRequest("messages must contain at least one message with text")
     plan = Plan(prefix=prefix, last=last)
     header_conv = (header_conv or "").strip() or None
+    if header_conv and hasattr(store, "follow"):
+        header_conv = store.follow(header_conv)      # a rolled-over conversation continues in its successor
 
     # (a) pinned
     if header_conv and store.conv(header_conv) and (store.conv(header_conv) or {}).get("state"):
@@ -59,6 +62,8 @@ def resolve(store, messages, model=None, header_conv=None):
     if name:
         plan.name = name
         cid = store.name_to_conv(name)
+        if cid and hasattr(store, "follow"):
+            cid = store.follow(cid)
         if cid and (store.conv(cid) or {}).get("state"):
             plan.conv_id, plan.mode, plan.prompt = cid, "named", message_prompt(last)
         else:

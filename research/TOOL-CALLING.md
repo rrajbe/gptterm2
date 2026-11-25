@@ -82,7 +82,7 @@ Notes:
 - **Compact tool list:** gptapi can rewrite the remaining JSON tool schemas (~7.7k) as one-line
   signatures (~1.5k), the format T2 used. That leaves a first message of about 3–4k characters.
 
-## 4. Plan (not built yet)
+## 4. Plan (built in 0.0.2; see README "Tool calling")
 
 1. **opencode side:** a `gptapi` agent with `model: gptapi/chatgpt-web`, a short system prompt
    and the denies from config D (`tool-calling/opencode-D.json`).
@@ -110,3 +110,20 @@ Based on `OPENCODE-FLOW.md` (what opencode sends) and `LIMITS.md` (window ~24–
 | Large tool results | **Cap and let the model page.** Send the first ~6k and last ~2k characters with a note: "N chars omitted; use read with offset/limit or grep". Don't push chunks up front: measured, it fits nothing more and costs a message per chunk. |
 | Usage numbers | Still to decide. Reporting the real chatgpt.com conversation size would make opencode's context display truthful. |
 | Small fixes | Cookie banner: click "Reject non-essential". chatgpt.com's HTTP 400 for an oversized message should be `message_too_long`, not `rate_limit_exceeded`. |
+
+## 6. Built and piloted (0.0.2, 2026-11-25)
+
+All of §5 is built except "usage numbers" (still the chars typed this turn / 4). 37 unit tests
+pass. Pilot with opencode 2.4.0; raw records in `results/pilot/`:
+
+| Task | chatgpt.com messages | Prompts typed | Result |
+|---|---|---|---|
+| "What does calc.py do?" | 2 | 2,529 → 342 | read, then a correct answer |
+| "Add sub(a, b), a test, run pytest" | 3 | 3,870 → 537 → 343 | one `patch` to two files, `shell` pytest, summary; the edit was correct (3 tests pass) |
+
+Found in the pilot: for a model named `chatgpt-web` (contains "gpt"), opencode offers `patch`
+(an apply-patch diff format) instead of `edit`/`write`. `patch` is now allowed, and its full
+description is sent.
+
+Not yet tested live: rollover (unit-tested only), the cookie-banner retype, and a long
+multi-step task.

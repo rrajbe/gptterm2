@@ -53,6 +53,13 @@ class CapError(GptapiError):
     etype = "rate_limit_exceeded"
 
 
+class MessageTooLong(GptapiError):
+    """chatgpt.com refused the message as too large (HTTP 400). Named like OpenAI's error so
+    clients that compact on context overflow can react."""
+    status = 400
+    etype = "context_length_exceeded"
+
+
 class HumanCheckRequired(GptapiError):
     status = 503
     etype = "human_check_required"
@@ -201,9 +208,22 @@ class Tab:
         log.warning("debug dump %s.png / .json", base)
         return base, info
 
+    def dismiss_cookie_banner(self):
+        """Click "Reject non-essential" on chatgpt.com's cookie banner (the privacy-preserving
+        choice). The banner can appear mid-send and swallow the typed prompt. True if clicked."""
+        try:
+            return bool(self.ev("""(()=>{const b=[...document.querySelectorAll('button')].find(x=>
+                /^\\s*reject non-essential\\s*$/i.test(x.innerText||'') && x.getBoundingClientRect().width>0);
+                if(!b) return false; b.click(); return true})()""", 5))
+        except Exception:
+            return False
+
     def type_and_send(self, text):
         self.front()
         self.wait_composer()
+        if self.dismiss_cookie_banner():
+            log.info("cookie banner: clicked Reject non-essential")
+            time.sleep(0.5)
         ok = self.ev(f"""(()=>{{const e=document.querySelector({json.dumps(COMPOSER)}); if(!e) return false;
               e.focus(); if('value' in e && e.value){{e.select();}} return true}})()""")
         if not ok:
@@ -277,11 +297,20 @@ def run_turn(tab, store, ctx, prompt, conv_id, inject, on_event, raw_path=None):
             tab.c.call("Fetch.enable", {"patterns": [{"urlPattern": "*conversation/updates*", "requestStage": "Request"}]}, tab.sid)
         tab.type_and_send(prompt)
         t0 = time.time()
-        rid, conv_sent, nudges = None, False, 0
+        rid, conv_sent, nudges, retyped = None, False, 0, False
         while not parser.done:
             if tab.c.closed.is_set():
                 raise BrowserLost("lost connection to the browser")
             now = time.time()
+            # A cookie banner can appear while sending and the prompt vanishes without a request:
+            # dismiss it and type the prompt again (once).
+            if rid is None and not retyped and now - t0 > 4 and not tab.send_state().get("text") \
+                    and tab.dismiss_cookie_banner():
+                retyped = True
+                log.warning("cookie banner swallowed the prompt; clicked Reject non-essential and retyping")
+                time.sleep(0.5)
+                tab.type_and_send(prompt)
+                t0 = now = time.time()
             # Enter ignored? The prompt is still in the box: click Send, then try Enter once more.
             if rid is None and nudges < 2 and now - t0 > 3 + 4 * nudges and tab.send_state().get("text"):
                 nudges += 1
@@ -359,6 +388,9 @@ def run_turn(tab, store, ctx, prompt, conv_id, inject, on_event, raw_path=None):
             page = "; ".join(info.get("dialogs") or []) or (info.get("body") or "")[-600:]
             if tab.human_check():
                 raise HumanCheckRequired("human check shown on chatgpt.com")
+            if parser.error == "HTTP 400":
+                raise MessageTooLong(f"chatgpt.com refused the message as too long ({len(prompt)} characters; "
+                                     f"about 120k is accepted, 180k is not)")
             raise CapError(f"chatgpt.com turn failed ({parser.error}). Page says: {page.strip()[:800]}")
         try:
             tab.save_cookies(store, ctx)

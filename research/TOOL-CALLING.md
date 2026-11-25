@@ -125,5 +125,31 @@ Found in the pilot: for a model named `chatgpt-web` (contains "gpt"), opencode o
 (an apply-patch diff format) instead of `edit`/`write`. `patch` is now allowed, and its full
 description is sent.
 
-Not yet tested live: rollover (unit-tested only), the cookie-banner retype, and a long
-multi-step task.
+## 7. Long task with a live rollover (2026-11-25)
+
+Task, in a 4-file to-do app: "add a priority field (Task, to_dict/from_dict, Store.add, a CLI
+option, '!' in fmt, Store.by_priority), add tests, run them". To force a rollover early, the
+run used `GPTAPI_ROLLOVER_CHARS=12000` (set in `docker/.env`). The recordings are in
+`results/rollover/`, which is not in git.
+
+| Run | Model id / edit tool | What happened |
+|---|---|---|
+| 1 | `chatgpt-web` / `patch` | 4 messages: reads, patch, **rollover** (4.4k-char seed), re-reads + tests, summary. 6 tests pass. The seed held only the task and `[tool result patch]`: the patch call itself didn't fit the 6k half-budget. **Fix:** always keep the latest turn, shortened if needed. |
+| 2 | `chatgpt-web` / `patch` | The first answer was a refusal: "I can't access the workspace through the coding tools". **Fix:** stronger wording ("the tool connection is live") and one automatic nudge. |
+| 3 | `chatgpt-web` / `patch` | Another first-turn refusal ("tools aren't currently available"), which the first refusal pattern missed. **Fix:** a wider pattern. |
+| 4 | `chatgpt-web` / `patch` | Reads worked. Then: "I couldn't apply the patch through the available execution interface". The model was calling its own built-in apply-patch tool. **Fix:** nudge on any turn, not just the first, and hold short text back from the stream. |
+| 5 | `chatgpt-web` / `patch` | Refusal on turn 1 was nudged and recovered. Turn 2 had the same "alternate execution interface" failure. |
+| 6 | **`chat-web` / `edit`+`write`** | Refusal on turn 1, nudged; reads; edits to 4 files; **rollover** (the seed kept the latest edits); a test run showed a missing `)`; the model fixed it; 7 tests pass. **6 chatgpt.com messages in total.** |
+
+Findings:
+- **Edit tool:** opencode picks the edit tool from the model id. With "gpt" in the id it offers
+  `patch` (OpenAI's apply-patch format), and chatgpt.com's model then tries its own built-in
+  apply-patch tool. Two runs out of two failed that way. `edit` (JSON oldString/newString)
+  works, as T6 had already shown. The model id is now `chat-web`.
+- **Refusals:** in about half of the fresh conversations today, the first answer claimed the
+  tools weren't connected. Stronger wording alone didn't stop it. One nudge in the same
+  conversation recovered every time it was tried (3 of 3), at the cost of one message.
+- **Rollover:** it works live. The task carried on in the new conversation without
+  re-planning, and opencode didn't notice anything.
+
+Not yet tested live: the cookie-banner retype (no banner appeared in these runs).

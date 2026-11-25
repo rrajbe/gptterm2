@@ -8,13 +8,13 @@
         "baseURL": "http://127.0.0.1:8000/v1"
       },
       "models": {
-        "chatgpt-web": {
+        "chat-web": {
           "name": "ChatGPT (logged-out web)"
         }
       }
     }
   },
-  "model": "gptapi/chatgpt-web",
+  "model": "gptapi/chat-web",
   "agents": {
     "title": {
       "disabled": true

@@ -8,10 +8,10 @@ import uuid
 from aiohttp import web
 
 from . import __version__
-from .agent import Agent, build_first
+from .agent import NUDGE, Agent, build_first
 from .browser import Browser, BrowserLost, GptapiError, HumanCheckRequired
 from .history import content_text
-from .mapping import MODEL_BASE, BadRequest, after_turn_hashes, resolve
+from .mapping import MODEL_BASE, MODEL_BASES, BadRequest, after_turn_hashes, resolve
 from .store import Store
 from .stream import StableEmitter
 
@@ -67,7 +67,7 @@ class App:
 
     async def model(self, request):
         mid = request.match_info["mid"]
-        if mid != MODEL_BASE and not mid.startswith(MODEL_BASE + "/"):
+        if not any(mid == b or mid.startswith(b + "/") for b in MODEL_BASES):
             return err(404, "model_not_found", f"unknown model {mid}")
         return web.json_response({"id": mid, "object": "model", "created": int(time.time()), "owned_by": "chatgpt.com"})
 
@@ -145,6 +145,7 @@ class App:
         def on_event(kind, val):
             loop.call_soon_threadsafe(q.put_nowait, (kind, val))
 
+
         async def job():
             # runs to completion even if the client goes away, so the transcript/state stay right
             try:
@@ -153,17 +154,31 @@ class App:
                 q.put_nowait(("error", e))
                 return None
             cid = res["conversation_id"]
+            extra = 0
             if agent:
                 text, calls, problems = agent.parse(res["answer"])
                 if problems:
                     log.warning("tool_call blocks not accepted: %s", "; ".join(problems))
+                if not calls and Agent.refused(text):
+                    # the model sometimes claims the tools are not connected; one nudge, same conversation
+                    log.warning("answer claims no tool access; nudging once: %r", text[:160])
+                    try:
+                        res2 = await self.browser.turn(NUDGE, cid, None, lambda *a: None)
+                    except Exception as e:
+                        log.warning("nudge failed (%s); returning the first answer", e)
+                    else:
+                        extra = len(NUDGE) + len(res["answer"] or "")
+                        res = res2
+                        text, calls, problems = agent.parse(res["answer"])
+                        if problems:
+                            log.warning("tool_call blocks not accepted: %s", "; ".join(problems))
                 res["text"], res["calls"] = text, calls
                 canonical = agent.render_assistant(text, calls)
             else:
                 canonical = res["answer"]
             self.store.add_point(cid, after_turn_hashes(plan.prefix, plan.last, [canonical]), res["conv_state"])
             before = (self.store.conv(plan.conv_id) or {}).get("chars", 0) if plan.conv_id else 0
-            self.store.update_conv(cid, chars=before + len(plan.prompt) + len(res["answer"] or ""))
+            self.store.update_conv(cid, chars=before + extra + len(plan.prompt) + len(res["answer"] or ""))
             if plan.rolled_from and plan.rolled_from != cid:
                 self.store.update_conv(plan.rolled_from, rolled_to=cid)
             if plan.name:
@@ -236,6 +251,10 @@ class App:
                 cut = [i for i in (text.find("```tool_call"), text.find("<tool_call>")) if i >= 0]
                 if cut:
                     return text[:min(cut)]
+                # short answers are held until complete: a refusal ("the tools are not connected")
+                # is always short, and is retried (see job) without the client having seen it
+                if len(text) < Agent.HOLD_CHARS:
+                    return ""
             return text
 
         await send({"role": "assistant", "content": ""})

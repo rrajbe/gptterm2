@@ -30,7 +30,8 @@ FULL_DESCRIPTION = ("patch", "apply_patch")
 
 SYSTEM = """You are a coding agent working on the user's computer through a coding tool (for example opencode). \
 You cannot see files or run commands yourself: you ask the tool to do it with tool calls, and the results come back \
-in the next message. Never guess file contents or command output; read or run first. Make focused changes, \
+in the next message. The tool connection is live in this conversation: the tool runs every valid tool call on the \
+user's computer and sends back the real result. Never guess file contents or command output; read or run first. Make focused changes, \
 preserve existing indentation and style, and check your work (for example run the tests) when it matters. \
 Keep replies short and concrete. When the task is done, give a brief summary of what you changed."""
 
@@ -42,10 +43,22 @@ To use tools, reply with ONLY fenced code blocks tagged tool_call, one JSON obje
 Several blocks in one reply run in order. Results come back as [tool result <name>]. \
 Use only these tools and argument names (? = optional):
 {catalog}
-When no tool is needed, answer normally without any tool_call block."""
+When no tool is needed, answer normally without any tool_call block. The tools are connected: if the current \
+message needs files or commands, reply with tool_call blocks now."""
 
 REMINDER = ("[Reminder] To use a tool, reply with only ```tool_call blocks as described in the tool protocol; "
             "never guess file contents or command output.")
+
+# a first answer that claims the tools are missing gets one nudge in the same conversation
+REFUSAL_RE = re.compile(r"\b(can(?:no|['’])t|cannot|unable to|don['’]t have|do not have|no)\b[^.\n]{0,40}"
+                        r"\b(access|use|reach|call|run)\b[^.\n]{0,60}\b(tools?|files?|workspace|repo\w*|"
+                        r"file ?system|commands?|computer)\b", re.I)
+REFUSAL2_RE = re.compile(r"\b(tools?|tooling|workspace)\b[^.\n]{0,40}\b(aren['’]t|are not|isn['’]t|is not|not)"
+                         r"\b[^.\n]{0,20}\b(available|connected|accessible|enabled|attached)\b"
+                         r"|\breconnect\b[^.\n]{0,30}\btool", re.I)
+NUDGE = ("The tools are connected and working in this conversation: the coding tool runs each ```tool_call block "
+         "on the user's computer and sends the real result back. Reply now with the tool_call blocks for your next "
+         "step, as described in the tool protocol.")
 
 BLOCK_RE = re.compile(r"```[ \t]*tool_call[^\n]*\n(.*?)\n?```", re.S)
 XML_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.S)
@@ -90,6 +103,7 @@ def signature(f):
 
 
 class Agent:
+    HOLD_CHARS = 1500     # agent-mode text shorter than this is not streamed until the answer is complete
     def __init__(self, tools, allow=DEFAULT_ALLOW, result_chars=8000):
         allf = function_tools(tools)
         if allow and "*" not in allow:
@@ -207,6 +221,11 @@ class Agent:
         proto = self.protocol()
         return build_first(system, turns, current, proto, budget)
 
+    @staticmethod
+    def refused(text):
+        """True when an answer without tool calls claims the tools are not available."""
+        return bool(text) and len(text) < Agent.HOLD_CHARS and bool(REFUSAL_RE.search(text) or REFUSAL2_RE.search(text))
+
     def later_prompt(self, prompt):
         return prompt + "\n\n" + REMINDER
 
@@ -269,6 +288,13 @@ class Agent:
                  "function": {"name": n, "arguments": json.dumps(a, ensure_ascii=False)}} for n, a in calls]
 
 
+def _shorten(text, n):
+    if len(text) <= n:
+        return text
+    head, tail = int(n * 0.7), int(n * 0.3)
+    return text[:head] + f"\n[... {len(text) - head - tail} characters left out ...]\n" + text[-tail:]
+
+
 def build_first(system, turns, current, protocol=None, budget=None):
     """Shared by agent and plain mode. turns: [{role, content}] (no system)."""
     label = {"user": "User", "assistant": "Assistant", "tool": "Tool result"}
@@ -280,10 +306,16 @@ def build_first(system, turns, current, protocol=None, budget=None):
         room = max(0, budget - fixed)
         first_user = next((r for r in rendered if r.startswith("User: ")), None)
         keep, size = [], len(first_user or "")
-        for r in reversed(rendered):
+        for i, r in enumerate(reversed(rendered)):
             if r is first_user:
                 continue
             if size + len(r) > room:
+                if i == 0:
+                    # the latest turn (usually the tool call whose result is the current
+                    # message) is always kept, shortened if it does not fit
+                    r = _shorten(r, max(room - size, 1500))
+                    keep.insert(0, r)
+                    size += len(r)
                 break
             keep.insert(0, r)
             size += len(r)

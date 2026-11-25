@@ -54,7 +54,7 @@ if [ "$TEST" = 1 ]; then
   say "Sending one test message (uses one of chatgpt.com's logged-out messages)"
   reply=$(curl -sS --max-time 120 "http://127.0.0.1:$API_PORT/v1/chat/completions" \
     -H 'Content-Type: application/json' \
-    -d '{"model":"chatgpt-web","messages":[{"role":"user","content":"Reply with exactly the word: ready"}]}')
+    -d '{"model":"chat-web","messages":[{"role":"user","content":"Reply with exactly the word: ready"}]}')
   if printf '%s' "$reply" | grep -q '"content"'; then
     ok "answer: $(printf '%s' "$reply" | python3 -c 'import json,sys; print(json.load(sys.stdin)["choices"][0]["message"]["content"])' 2>/dev/null || echo "$reply")"
   else
@@ -75,6 +75,10 @@ elif [ ! -e "$OC_FILE" ]; then
   opencode service restart >/dev/null 2>&1 || true
 elif grep -q '"gptapi"' "$OC_FILE"; then
   ok "$OC_FILE already has a gptapi provider; left unchanged"
+  if grep -q '"chatgpt-web"' "$OC_FILE"; then
+    warn "It still uses the old model id chatgpt-web. Rename it to chat-web in $OC_FILE (both places):"
+    warn "with \"gpt\" in the id, opencode offers its patch tool, which chatgpt.com handles badly."
+  fi
 else
   warn "$OC_FILE already exists, so it was left unchanged."
   warn "Add the \"gptapi\" entry from $(pwd)/opencode.json to it (see INSTALL.md, step 4)."
@@ -83,7 +87,7 @@ fi
 cat <<EOF
 
 Done. gptapi is running.
-  API for clients:   http://127.0.0.1:$API_PORT/v1   (model: chatgpt-web, no API key)
+  API for clients:   http://127.0.0.1:$API_PORT/v1   (model: chat-web, no API key)
   Watch the browser: http://127.0.0.1:$NOVNC_PORT    (click any "verify you are human" check here)
   Try it:            opencode run "hello"
 EOF

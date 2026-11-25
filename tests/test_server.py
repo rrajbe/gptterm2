@@ -66,7 +66,7 @@ def test_nonstream_then_history_maps(tmp_path):
         assert r.headers["X-Gptapi-Mapping"] == "matched"
         assert fake.calls[1] == ("more", CID, None)
         r = await c.get("/v1/models")
-        assert [m["id"] for m in (await r.json())["data"]] == ["chatgpt-web"]
+        assert [m["id"] for m in (await r.json())["data"]] == ["chat-web"]
         await c.close()
     run(go())
 
@@ -94,11 +94,11 @@ def test_named_model(tmp_path):
     async def go():
         fake = FakeBrowser()
         c = await _client(tmp_path, fake)
-        await c.post("/v1/chat/completions", json={"model": "chatgpt-web/work", "messages": [{"role": "user", "content": "a"}]})
-        r = await c.post("/v1/chat/completions", json={"model": "chatgpt-web/work", "messages": [{"role": "user", "content": "b"}]})
+        await c.post("/v1/chat/completions", json={"model": "chat-web/work", "messages": [{"role": "user", "content": "a"}]})
+        r = await c.post("/v1/chat/completions", json={"model": "chat-web/work", "messages": [{"role": "user", "content": "b"}]})
         assert r.headers["X-Gptapi-Mapping"] == "named" and fake.calls[1][1] == CID
         ids = [m["id"] for m in (await (await c.get("/v1/models")).json())["data"]]
-        assert "chatgpt-web/work" in ids
+        assert "chat-web/work" in ids
         await c.close()
     run(go())
 

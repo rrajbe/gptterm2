@@ -4,7 +4,7 @@ import json
 
 from aiohttp.test_utils import TestClient, TestServer
 
-from gptapi.agent import REMINDER, SYSTEM, Agent
+from gptapi.agent import NUDGE, REMINDER, SYSTEM, Agent
 from gptapi.config import Config
 from gptapi.server import APP_KEY, build_app
 
@@ -88,6 +88,10 @@ def test_first_prompt_layout_and_budget():
     small = a.first_prompt(prefix, {"role": "user", "content": "NOW"}, budget=8000)
     assert len(small) < 9000 and "THE TASK" in small and "result 29" in small and "result 0 " not in small
     assert "older messages were left out" in small
+    # the latest turn survives (shortened) even when it alone is bigger than the budget
+    prefix += [{"role": "assistant", "content": "LAST CALL " + "p" * 20000}]
+    tight = a.first_prompt(prefix, {"role": "user", "content": "[tool result patch]\nok"}, budget=6000)
+    assert "Assistant: LAST CALL" in tight and "characters left out" in tight and len(tight) < 9000
 
 
 # ---------------------------------------------------------------- server
@@ -147,7 +151,7 @@ def test_tool_loop_nonstream_matches_and_reminds(tmp_path):
         assert tc["function"]["name"] == "read" and json.loads(tc["function"]["arguments"]) == {"path": "a.py"}
         first = fake.calls[0][0]
         assert first.startswith("[Instructions]\n" + SYSTEM) and first.rstrip().endswith(
-            "When no tool is needed, answer normally without any tool_call block.")
+            "reply with tool_call blocks now.")
         assert "Code Mode" not in first and "generate_video" not in first
         # opencode sends the tool result back with the full history
         msgs += [{"role": "assistant", "content": "Looking.", "tool_calls": ch["message"]["tool_calls"]},
@@ -223,3 +227,52 @@ def test_patch_tool_gets_full_description():
              "parameters": {"type": "object", "properties": {"patchText": {"type": "string"}}, "required": ["patchText"]}}}
     a = Agent(TOOLS + [patch])
     assert "patch" in a.tools and "*** Begin Patch" in a.catalog()
+
+
+def test_refusal_detection():
+    for t in ["I can’t access the workspace through the coding tools in this session.",
+              "I can make these changes, but the coding tools aren't currently available in this session.",
+              "Please reconnect the coding tool, and I'll proceed.", "I don't have access to your files."]:
+        assert Agent.refused(t), t
+    for t in ["The tests pass. No changes to the files were needed.", "There is no access control in store.py.",
+              "Added a --priority option; all 6 tests pass.", "The file is not available offline by default."]:
+        assert not Agent.refused(t), t
+
+
+def test_refusal_on_first_turn_gets_one_nudge(tmp_path):
+    async def go():
+        fake = ScriptedBrowser(["I can’t access the workspace through the coding tools in this session.",
+                                "Reading.\n\n" + CALL])
+        c = await _client(tmp_path, fake)
+        msgs = [{"role": "system", "content": SYS}, {"role": "user", "content": "go"}]
+        r = await c.post("/v1/chat/completions", json={"model": "m", "messages": msgs, "tools": TOOLS, "stream": True})
+        chunks = _sse(await r.text())
+        text = "".join(ch["choices"][0]["delta"].get("content") or "" for ch in chunks if ch.get("choices"))
+        assert text == "Reading." and "can’t" not in text          # the refusal never reached the client
+        assert chunks[-1]["choices"][0]["finish_reason"] == "tool_calls"
+        assert len(fake.calls) == 2 and fake.calls[1][1] == CID1 and fake.calls[1][0] == NUDGE
+        await c.close()
+    asyncio.run(go())
+
+
+def test_refusal_on_a_later_turn_is_nudged_too(tmp_path):
+    async def go():
+        fake = ScriptedBrowser(["Looking.\n\n" + CALL, "I couldn't apply the patch. Please reconnect the coding tool.",
+                                "It defines f()."])
+        c = await _client(tmp_path, fake)
+        msgs = [{"role": "system", "content": SYS}, {"role": "user", "content": "go"}]
+        j = await (await c.post("/v1/chat/completions", json={"model": "m", "messages": msgs, "tools": TOOLS})).json()
+        tc = j["choices"][0]["message"]["tool_calls"]
+        msgs += [{"role": "assistant", "content": "Looking.", "tool_calls": tc},
+                 {"role": "tool", "tool_call_id": tc[0]["id"], "content": "def f(): pass"}]
+        r = await c.post("/v1/chat/completions", json={"model": "m", "messages": msgs, "tools": TOOLS, "stream": True})
+        chunks = _sse(await r.text())
+        text = "".join(ch["choices"][0]["delta"].get("content") or "" for ch in chunks if ch.get("choices"))
+        assert text == "It defines f()." and fake.calls[2] == (NUDGE, CID1, None)
+        # the next request still matches: the client's history holds only the final answer
+        msgs += [{"role": "assistant", "content": text}, {"role": "user", "content": "thanks"}]
+        fake.answers.append("ok")
+        r = await c.post("/v1/chat/completions", json={"model": "m", "messages": msgs, "tools": TOOLS})
+        assert r.headers["X-Gptapi-Mapping"] == "matched"
+        await c.close()
+    asyncio.run(go())

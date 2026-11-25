@@ -64,6 +64,11 @@ GPTAPI_API_PORT=8001
 GPTAPI_NOVNC_PORT=6081
 ```
 
+The same `docker/.env` file also passes gptapi settings into the container, for example
+`GPTAPI_ROLLOVER_CHARS=50000` or `GPTAPI_TOOLS=read,grep,glob`. The README lists them all.
+Don't set `GPTAPI_HOST`, `GPTAPI_PORT` or `GPTAPI_DATA` there, because the container needs
+its own values. After you change the file, run `./install.sh` again.
+
 ## 4. opencode
 
 `opencode.json` in this folder is the clean config:
@@ -79,13 +84,13 @@ GPTAPI_NOVNC_PORT=6081
         "baseURL": "http://127.0.0.1:8000/v1"
       },
       "models": {
-        "chatgpt-web": {
+        "chat-web": {
           "name": "ChatGPT (logged-out web)"
         }
       }
     }
   },
-  "model": "gptapi/chatgpt-web",
+  "model": "gptapi/chat-web",
   "agents": {
     "title": {
       "disabled": true
@@ -97,11 +102,11 @@ GPTAPI_NOVNC_PORT=6081
 | Entry | Meaning |
 |---|---|
 | `$schema` | Lets editors check the file and autocomplete it. |
-| `providers.gptapi` | A model server called `gptapi`. The name is the part before `/` in `gptapi/chatgpt-web`. |
+| `providers.gptapi` | A model server called `gptapi`. The name is the part before `/` in `gptapi/chat-web`. |
 | `name` | The label shown in opencode's model picker. |
 | `package` | The adapter opencode downloads to talk to any OpenAI-compatible server. |
 | `settings.baseURL` | Where gptapi listens. Change the port if you installed on another port. |
-| `models.chatgpt-web` | The one model gptapi offers. `name` is its label in the picker. |
+| `models.chat-web` | The one model gptapi offers. `name` is its label in the picker. Keep "gpt" out of the id: for such ids opencode switches to its `patch` tool, which chatgpt.com handles badly (README, "opencode"). |
 | `model` | The default model, so plain `opencode` uses gptapi. |
 | `agents.title.disabled` | Turns off opencode's automatic session titles. Each title would otherwise send an extra chatgpt.com message and use up the logged-out message limit faster. Sessions keep a default title instead. |
 
@@ -113,11 +118,12 @@ opencode marks them deprecated. It was tested with opencode 2.4.0.
 
 **How the installer handles it:**
 - **No opencode config yet:** it copies this file to `~/.config/opencode/opencode.json`.
-- **A config that already has a `gptapi` provider:** it leaves the file alone.
+- **A config that already has a `gptapi` provider:** it leaves the file alone. If that
+  provider still uses the 0.0.1 model id `chatgpt-web`, it tells you to rename it to `chat-web`.
 - **Any other existing config:** it leaves the file alone and tells you. Add the `gptapi`
   block under `"providers"` yourself. Keep your current `"model"` if you want another provider
   as the default; you can still pick gptapi in the model picker or with
-  `opencode -m gptapi/chatgpt-web`.
+  `opencode -m gptapi/chat-web`.
 
 After editing the config by hand, restart opencode's background server:
 
@@ -184,7 +190,7 @@ docker cp gptapi:/data/gptapi/sessions ./gptapi-transcripts
 |---|---|
 | `Docker is installed but not running` | Start Docker Desktop and wait for "Engine running". |
 | `Port 8000 is already in use` | Install on other ports (step 3). |
-| opencode: `Model unavailable: gptapi/chatgpt-web` | Run `opencode service restart`, then check `opencode models | grep gptapi`. |
+| opencode: `Model unavailable: gptapi/chat-web` | Run `opencode service restart`, then check `opencode models | grep gptapi`. |
 | Errors with `rate_limit_exceeded` (HTTP 429) | chatgpt.com's logged-out message limit is reached. The error text says what the page shows. Try again later. |
 | Errors with `human_check_required` (HTTP 503) | Clear the check at http://127.0.0.1:6080 (step 5). |
 | Errors with `browser_unavailable` (HTTP 503) | `docker restart gptapi`. If it keeps happening, check `docker exec gptapi tail -50 /var/log/gptapi/chromium.log`. |

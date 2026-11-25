@@ -11,6 +11,11 @@ services:
     ports:
       - "127.0.0.1:${GPTAPI_API_PORT:-8000}:8000"     # OpenAI-compatible API
       - "127.0.0.1:${GPTAPI_NOVNC_PORT:-6080}:6080"   # noVNC: watch the browser, clear human checks
+    # Optional docker/.env: ports for compose, plus gptapi settings (GPTAPI_TOOLS,
+    # GPTAPI_ROLLOVER_CHARS, ...; see README). Don't set GPTAPI_HOST/PORT/DATA there.
+    env_file:
+      - path: .env
+        required: false
     environment:
       GPTAPI_NOVNC_URL: http://localhost:${GPTAPI_NOVNC_PORT:-6080}
     volumes:

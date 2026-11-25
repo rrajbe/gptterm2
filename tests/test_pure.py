@@ -200,12 +200,12 @@ def test_resolve_no_dialogue_never_matches(store):
 
 
 def test_resolve_named_and_header(store):
-    assert model_name("chatgpt-web/work") == "work" and model_name("chatgpt-web") is None
-    plan = resolve(store, MSGS[:2], "chatgpt-web/work")
+    assert model_name("chat-web/work") == "work" and model_name("chat-web/work") == "work" and model_name("chat-web") is None
+    plan = resolve(store, MSGS[:2], "chat-web/work")
     assert plan.mode == "new" and plan.name == "work"
     store.add_point(CID, [], {"backendConversationId": CID})
     store.bind_name("work", CID)
-    plan = resolve(store, [{"role": "user", "content": "next"}], "chatgpt-web/work")
+    plan = resolve(store, [{"role": "user", "content": "next"}], "chat-web/work")
     assert plan.mode == "named" and plan.conv_id == CID and plan.prompt == "next"
     plan = resolve(store, [{"role": "user", "content": "next"}], "x", header_conv=CID)
     assert plan.mode == "pinned" and plan.conv_id == CID

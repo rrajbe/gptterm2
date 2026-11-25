@@ -62,6 +62,9 @@ fake browser; no network).
 
 ## Environment
 
+In Docker, put gptapi settings in `docker/.env` (see INSTALL.md); compose passes them to the
+container.
+
 | Variable | Default | Meaning |
 |---|---|---|
 | `GPTAPI_HOST` | `127.0.0.1` | listen address (`0.0.0.0` in a container) |
@@ -83,11 +86,11 @@ fake browser; no network).
 
 ## Endpoints
 
-- `GET /v1/models`: `chatgpt-web`, plus `chatgpt-web/<name>` for every named conversation.
+- `GET /v1/models`: `chat-web`, plus `chat-web/<name>` for every named conversation.
 - `POST /v1/chat/completions` (also `/chat/completions`): `stream: false` returns a
   `chat.completion`. `stream: true` returns SSE `chat.completion.chunk`s ending with
   `data: [DONE]`, and honours `stream_options.include_usage`. Usage numbers are estimates
-  (characters / 4). Any `model` value is accepted. Only `chatgpt-web/<name>` has a special
+  (characters / 4). Any `model` value is accepted. Only `chat-web/<name>` (or the 0.0.1 form `chatgpt-web/<name>`) has a special
   meaning. `tools` switch on agent mode (see "Tool calling"); `tool_choice`, `temperature`
   and similar fields are ignored.
 - `GET /health`: browser connection, open tabs (URL, busy, human check) and human-check
@@ -128,7 +131,7 @@ The internal key is the chatgpt.com conversation id. Each request is resolved in
 
 1. **Pinned.** An `X-Conversation-Id` request header with a known conversation id continues that
    conversation. Any other header value is treated as a **name**, and so is the model
-   `chatgpt-web/<name>`. A name maps to a conversation id in the state file. Once a named
+   `chat-web/<name>`. A name maps to a conversation id in the state file. Once a named
    conversation exists, only the last message is sent. If it does not exist yet, it is created
    from the flattened history and the name is bound to it.
 2. **Automatic.** gptapi hashes the history before the last message (system + all earlier
@@ -167,16 +170,22 @@ The internal key is the chatgpt.com conversation id. Each request is resolved in
 
 Use [`opencode.json`](opencode.json) (explained entry by entry in [INSTALL.md](INSTALL.md#4-opencode)).
 It adds the `gptapi` provider (`@ai-sdk/openai-compatible`, base URL
-`http://127.0.0.1:8000/v1`, model `chatgpt-web`), makes it the default, and turns off
+`http://127.0.0.1:8000/v1`, model `chat-web`), makes it the default, and turns off
 opencode's title generation.
 
 opencode resends the full history on every turn, so automatic mapping keeps one chatgpt.com
 conversation per opencode session. Side requests with a different system prompt, such as
 title generation, each start a separate new chatgpt.com conversation and count against the
 logged-out message cap. That's why the config turns titles off. To pin a session to a named
-conversation, add a model `chatgpt-web/<name>`. opencode's tools work through gptapi's emulated
-tool calling (below). Because the model is called `chatgpt-web`, opencode offers its `patch`
-tool for edits instead of `edit`/`write`; gptapi sends `patch`'s full format description.
+conversation, add a model `chat-web/<name>`. opencode's tools work through gptapi's emulated
+tool calling (below).
+
+Keep "gpt" out of the model id. For a model whose id contains "gpt", opencode offers its
+`patch` tool (OpenAI's apply-patch format) instead of `edit`/`write`. chatgpt.com's model then
+tends to call its own built-in apply-patch tool, fails, and reports that the tools aren't
+connected. This was seen live on 2026-11-25. The model was called `chatgpt-web` in 0.0.1;
+gptapi still accepts that id and `chatgpt-web/<name>`, but rename it to `chat-web` in your
+opencode config.
 
 ## Tool calling (agent mode)
 
@@ -191,8 +200,14 @@ emulates it. The design and the measurements behind it are in `research/TOOL-CAL
 - **Protocol.** The model replies with fenced ```` ```tool_call ```` blocks holding
   `{"name", "arguments"}` JSON. gptapi checks each call against the tool's schema (unknown
   tools and missing required arguments stay as visible text; unknown argument names are
-  dropped) and returns `tool_calls` with `finish_reason: "tool_calls"`. When streaming, text
-  before the first block streams as usual and the calls arrive in one chunk at the end.
+  dropped) and returns `tool_calls` with `finish_reason: "tool_calls"`. When streaming, the
+  calls arrive in one chunk at the end. Text starts streaming once it is 1,500 characters long
+  (or when the answer ends), so a short refusal is never shown before it can be retried.
+- **Refusals.** Sometimes the model answers that the tools "aren't connected" or "aren't
+  available" instead of calling one. gptapi then sends one nudge in the same conversation (the
+  tools are connected; reply with tool_call blocks) and returns the answer to that instead.
+  This costs one extra chatgpt.com message. The log line is
+  `answer claims no tool access; nudging once`.
 - **Later turns.** Tool results are typed as `[tool result <name>]` text, several results of one
   step in one message, plus a one-line reminder of the protocol. Each agent step is one
   chatgpt.com message.
@@ -202,13 +217,17 @@ emulates it. The design and the measurements behind it are in `research/TOOL-CAL
   silently drops the oldest messages: the instructions and the task. Past
   `GPTAPI_ROLLOVER_CHARS`, gptapi starts a fresh conversation in the same request, seeded with the
   instructions, the original task, the most recent turns that fit in half the budget, and the
-  protocol (`X-Gptapi-Mapping: rollover`). A conversation that rolled over forwards to its
+  protocol (`X-Gptapi-Mapping: rollover`). The latest turn is always kept, shortened if needed,
+  so the current tool result never arrives without its call. A conversation that rolled over forwards to its
   successor, also for pinned ids and names. A conversation with only one turn is never rolled
   over again. Rollover also applies to plain chat.
 
 Piloted 2026-11-25 with opencode 2.4.0. "What does calc.py do?" took 2 chatgpt.com messages
 (read, then answer). "Add sub(), add a test, run the tests" took 3 (one patch to two files, one
-shell call, then the summary); the edits were correct.
+shell call, then the summary); the edits were correct. A longer task ("add a priority field
+across 3 modules, add tests, run them") ran through a live rollover (with
+`GPTAPI_ROLLOVER_CHARS=12000` to force one) in 6 messages, including one nudge, and finished with
+all 7 tests passing. See `research/TOOL-CALLING.md` §7.
 
 ## Limits
 

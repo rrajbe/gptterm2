@@ -1,6 +1,6 @@
 """Map an OpenAI chat request onto a chatgpt.com conversation.
 
-Order: (a) pinned by X-Conversation-Id header or model "chatgpt-web/<name>";
+Order: (a) pinned by X-Conversation-Id header or model "chat-web/<name>";
 (b) automatic: hash of the history before the last message matches a known point of a stored
 conversation -> send only the last message; (c) otherwise a new conversation whose first prompt
 is the flattened history.
@@ -13,7 +13,10 @@ from .history import flatten, has_dialogue, history_hash, message_prompt, split_
 
 log = logging.getLogger("gptapi")
 
-MODEL_BASE = "chatgpt-web"
+# No "gpt" in the id: opencode gives models named *gpt* its `patch` tool (OpenAI's apply-patch format),
+# and chatgpt.com's model then tries its own built-in apply-patch tool instead of a tool_call block.
+MODEL_BASE = "chat-web"
+MODEL_BASES = (MODEL_BASE, "chatgpt-web")    # the 0.0.1 name still works
 _CONV_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 
 
@@ -34,10 +37,10 @@ class Plan:
 
 
 def model_name(model):
-    """'chatgpt-web/foo' -> 'foo'; anything else -> None (automatic mapping)."""
-    if model and model.startswith(MODEL_BASE + "/"):
-        n = model[len(MODEL_BASE) + 1:].strip()
-        return n or None
+    """'chat-web/foo' (or 'chatgpt-web/foo') -> 'foo'; anything else -> None (automatic mapping)."""
+    for base in MODEL_BASES:
+        if model and model.startswith(base + "/"):
+            return model[len(base) + 1:].strip() or None
     return None
 
 

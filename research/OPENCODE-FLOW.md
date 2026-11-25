@@ -70,7 +70,7 @@ conversation memory holds the context, and gptapi types only the new message.
 
 ## 6. Ways to keep the chatgpt.com side small
 
-Options considered, decided in the build plan (`TOOL-CALLING.md` §4 and later notes):
+Options considered (decided 2026-11-25: 1, 2, 3 and 4 chosen; see `TOOL-CALLING.md` §5):
 
 1. **Slim first message.** Replace the client's system prompt with gptapi's own short prompt
    plus the client's `<env>` block: ~1k instead of 15.5k.

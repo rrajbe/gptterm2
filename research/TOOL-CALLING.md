@@ -95,3 +95,18 @@ Notes:
    - cut very large tool results to a safe length.
 3. **Cookie-banner fix:** click Reject non-essential.
 4. **Pilot:** a few small opencode tasks, counting messages per task.
+
+## 5. Decisions (2026-11-25)
+
+Based on `OPENCODE-FLOW.md` (what opencode sends) and `LIMITS.md` (window ~24–28k tokens,
+~100k characters of real content; the oldest messages drop silently):
+
+| Topic | Decision |
+|---|---|
+| Where to slim | Entirely in gptapi. No custom opencode agent; vLLM isn't used in this project. `opencode.json` keeps only "titles off". |
+| System prompt | **Replace** opencode's prompt (15.5k chars) with gptapi's own short coding-agent prompt plus opencode's `<env>` block (~1k chars). |
+| Tools | Allowed-tool list (default edit, glob, grep, read, shell, write), one line per tool (~1.4k), protocol last, a one-line reminder each turn, schema check on every call. |
+| Long conversations | **gptapi rollover.** Track how many characters each chatgpt.com conversation holds. Past ~70k, start a fresh conversation in the same request: slim prompt + tool list + the original task (first user message) + the most recent turns that fit. No extra message. |
+| Large tool results | **Cap and let the model page.** Send the first ~6k and last ~2k characters with a note: "N chars omitted; use read with offset/limit or grep". Don't push chunks up front: measured, it fits nothing more and costs a message per chunk. |
+| Usage numbers | Still to decide. Reporting the real chatgpt.com conversation size would make opencode's context display truthful. |
+| Small fixes | Cookie banner: click "Reject non-essential". chatgpt.com's HTTP 400 for an oversized message should be `message_too_long`, not `rate_limit_exceeded`. |
